@@ -60,15 +60,21 @@ class ChronoFocusView extends WatchUi.WatchFace {
     private const RF_MID   as Float = 0.727f; // pomodoro-progress ring
     private const RF_INNER as Float = 0.669f; // steps ring
 
-    // ── Day-arc geometry (Garmin angle convention: 0=right, 90=top, CW decreases)
-    // Arc starts at 160° (≈10 o'clock) and sweeps 320° CW, ending at −160°.
-    // Gap is on the left side of the face.
+    // ── Arc geometry (Garmin: 0=right, 90=top, clockwise = decreasing angle) ──
+    // Pomodoro / steps rings — full 320° arc (unchanged)
     private const ARC_START as Float = 160.0f;
     private const ARC_SPAN  as Float = 320.0f;
 
+    // Day-timeline two-half rings:
+    //   AM ring (top):    160° → 20°   (10 o'clock → 1 o'clock, 140° sweep)
+    //   PM ring (bottom): -20° → -160° ( 5 o'clock → 8 o'clock, 140° sweep)
+    //   ≈40° gap on each side (3 and 9 o'clock) reserved for complications.
+    private const DAY_HALF_SPAN as Float = 140.0f;
+    private const DAY_PM_START  as Float = -20.0f;
+
     // ── Work-day / pomodoro constants ─────────────────────────────────────────
     private const WORK_START_H as Number = 8;  // 08:00
-    private const WORK_END_H   as Number = 18; // 18:00
+    private const WORK_END_H   as Number = 16; // 18:00
     private const POM_FOCUS    as Number = 25; // minutes
     private const POM_BREAK    as Number = 5;  // minutes
     private const POM_LONG_BRK as Number = 15; // long break every 4 poms
@@ -155,11 +161,11 @@ class ChronoFocusView extends WatchUi.WatchFace {
         _drawDayRing       (dc, cx, cy, R, dayElapsed, dayTotal, accentColor);
         _drawPomodoroRing  (dc, cx, cy, R, accentColor);
         _drawStepsRing     (dc, cx, cy, R, stepProg);
-        _drawCurrentMarker (dc, cx, cy, R, dayElapsed, dayTotal, accentColor);
+        // _drawCurrentMarker (dc, cx, cy, R, dayElapsed, dayTotal, COLOR_BREAK_ACT);
         _drawTopBar        (dc, cx, cy, R, battPct, accentColor);
         _drawCenterContent (dc, cx, cy, R, ct.hour, ct.min, ct.sec, accentColor);
-        _drawComplications (dc, cx, cy, R, hr);
-        _drawBottomBar     (dc, cx, cy, R, steps, stepsGoal, dailyGoalPct, accentColor);
+        // _drawComplications (dc, cx, cy, R, hr);
+        // _drawBottomBar     (dc, cx, cy, R, steps, stepsGoal, dailyGoalPct, accentColor);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -225,7 +231,10 @@ class ChronoFocusView extends WatchUi.WatchFace {
         dc.clear();
     }
 
-    // ── OUTER RING: day timeline ──────────────────────────────────────────────
+    // ── DAY RING: two symmetric arcs, same radius ─────────────────────────────
+    //   AM ring (top):    ARC_START → ARC_START-DAY_HALF_SPAN  (160°→20°)
+    //   PM ring (bottom): DAY_PM_START → DAY_PM_START-DAY_HALF_SPAN (-20°→-160°)
+    //   ~40° gap on each side (3 and 9 o'clock) for complications.
     private function _drawDayRing(
         dc          as Dc,
         cx          as Number,
@@ -235,26 +244,25 @@ class ChronoFocusView extends WatchUi.WatchFace {
         dayTotal    as Number,
         accentColor as Number
     ) as Void {
+        var rOuter  = (R.toFloat() * RF_OUTER).toNumber();
+        var halfMin = dayTotal.toFloat() / 2.0f;
+        var amEnd   = ARC_START    - DAY_HALF_SPAN;  //  20°
+        var pmEnd   = DAY_PM_START - DAY_HALF_SPAN;  // -160°
 
-        var rOuter = (R.toFloat() * RF_OUTER).toNumber();
-        var dt     = dayTotal.toFloat();
-
-        // Background track (full 320° sweep, dim)
+        // ── Background tracks ─────────────────────────────────────────────────
         dc.setColor(COLOR_RING_BG, Graphics.COLOR_TRANSPARENT);
         dc.setPenWidth(10);
         dc.drawArc(cx, cy, rOuter, Graphics.ARC_CLOCKWISE,
-            ARC_START.toNumber(), (ARC_START - ARC_SPAN).toNumber());
+            ARC_START.toNumber(),    amEnd.toNumber());
+        dc.drawArc(cx, cy, rOuter, Graphics.ARC_CLOCKWISE,
+            DAY_PM_START.toNumber(), pmEnd.toNumber());
 
-        // Pomodoro segments
+        // ── Pomodoro segments ─────────────────────────────────────────────────
         for (var i = 0; i < _segments.size(); i++) {
             var seg  = _segments[i] as Dictionary;
             var kind = seg[:kind]   as Symbol;
-            var sMin = (seg[:start] as Number).toFloat();
-            var eMin = (seg[:end]   as Number).toFloat();
-
-            var a1  = ARC_START - (sMin / dt) * ARC_SPAN;
-            var a2  = ARC_START - (eMin / dt) * ARC_SPAN;
-            var a2g = a2 + 0.4f;  // small gap between segments
+            var sF   = (seg[:start] as Number).toFloat();
+            var eF   = (seg[:end]   as Number).toFloat();
 
             var isPast    = (seg[:end]   as Number) <= dayElapsed;
             var isCurrent = dayElapsed   >= (seg[:start] as Number) &&
@@ -262,43 +270,41 @@ class ChronoFocusView extends WatchUi.WatchFace {
 
             var col;
             var pw;
-
             if (kind == :focus) {
                 pw  = 10;
                 col = isPast    ? COLOR_FOCUS_PST :
                       isCurrent ? accentColor      :
                                   COLOR_FOCUS_FUT;
             } else {
-                // break or longbreak — thinner, dimmer
                 pw  = 4;
                 col = isPast ? COLOR_DIMLINE : COLOR_BREAK_TRK;
             }
-
             dc.setPenWidth(pw);
             dc.setColor(col, Graphics.COLOR_TRANSPARENT);
-            dc.drawArc(cx, cy, rOuter, Graphics.ARC_CLOCKWISE,
-                a1.toNumber(), a2g.toNumber());
-        }
 
-        // ── Tick marks at every 2-hour boundary ──────────────────────────────
-        var tickMins   = [0, 120, 240, 360, 480, 600] as Array<Number>;
-        var tickLabels = ["08", "10", "12", "14", "16", "18"] as Array<String>;
+            // AM portion — top arc
+            if (sF < halfMin) {
+                var s  = sF;
+                var e  = (eF < halfMin) ? eF : halfMin;
+                var a1 = ARC_START - (s / halfMin) * DAY_HALF_SPAN;
+                var a2 = ARC_START - (e / halfMin) * DAY_HALF_SPAN;
+                dc.drawArc(cx, cy, rOuter, Graphics.ARC_CLOCKWISE,
+                    a1.toNumber(), (a2 + 0.4f).toNumber());
+            }
 
-        dc.setPenWidth(1);
-        for (var t = 0; t < tickMins.size(); t++) {
-            var tA  = ARC_START - (tickMins[t].toFloat() / dt) * ARC_SPAN;
-            var p1  = ChronoUI.UiMath.pointOnCircle(tA, cx, cy, rOuter - 10);
-            var p2  = ChronoUI.UiMath.pointOnCircle(tA, cx, cy, rOuter - 18);
-            dc.setColor(0x555555, Graphics.COLOR_TRANSPARENT);
-            dc.drawLine(p1[0], p1[1], p2[0], p2[1]);
-
-            var pL = ChronoUI.UiMath.pointOnCircle(tA, cx, cy, rOuter - 32);
-            ChronoUI.UiText.drawCenteredAt(dc, pL[0], pL[1],
-                tickLabels[t], Graphics.FONT_XTINY, COLOR_DIM);
+            // PM portion — bottom arc
+            if (eF > halfMin) {
+                var s  = (sF > halfMin) ? sF : halfMin;
+                var e  = eF;
+                var a1 = DAY_PM_START - ((s - halfMin) / halfMin) * DAY_HALF_SPAN;
+                var a2 = DAY_PM_START - ((e - halfMin) / halfMin) * DAY_HALF_SPAN;
+                dc.drawArc(cx, cy, rOuter, Graphics.ARC_CLOCKWISE,
+                    a1.toNumber(), (a2 + 0.4f).toNumber());
+            }
         }
     }
 
-    // ── CURRENT POSITION MARKER ───────────────────────────────────────────────
+    // ── CURRENT POSITION MARKER ──────────────────────────────────────────────
     private function _drawCurrentMarker(
         dc          as Dc,
         cx          as Number,
@@ -309,16 +315,23 @@ class ChronoFocusView extends WatchUi.WatchFace {
         accentColor as Number
     ) as Void {
         var rOuter  = (R.toFloat() * RF_OUTER).toNumber();
-        var markerA = ARC_START - (dayElapsed.toFloat() / dayTotal.toFloat()) * ARC_SPAN;
-        var mp      = ChronoUI.UiMath.pointOnCircle(markerA, cx, cy, rOuter);
+        var halfMin = dayTotal.toFloat() / 2.0f;
+        var isAM    = dayElapsed.toFloat() <= halfMin;
 
-        // Glow ring
-        dc.setColor(accentColor, Graphics.COLOR_TRANSPARENT);
-        dc.setPenWidth(1);
-        dc.drawCircle(mp[0], mp[1], 10);
+        var startDeg = isAM ? ARC_START    : DAY_PM_START;
+        var prog     = isAM
+            ? dayElapsed.toFloat() / halfMin
+            : (dayElapsed.toFloat() - halfMin) / halfMin;
 
-        // Solid dot
-        dc.fillCircle(mp[0], mp[1], 6);
+        ChronoUI.RadialMarker.draw(dc, prog, {
+            :cx             => cx,            :cy           => cy,
+            :radius         => rOuter,
+            :startDeg       => startDeg,      :sweepDeg     => DAY_HALF_SPAN,
+            :color          => accentColor,   :size         => 6,
+            :style          => :dot,
+            :trail          => true,          :trailDeg     => 12.0f,
+            :trailThickness => 2,             :trailColor   => accentColor
+        });
     }
 
     // ── MID RING: pomodoro-segment progress ───────────────────────────────────
@@ -379,7 +392,9 @@ class ChronoFocusView extends WatchUi.WatchFace {
         dc.fillCircle(ep[0], ep[1], 2);
     }
 
-    // ── TOP BAR: battery · date · state ──────────────────────────────────────
+    // ── TOP BAR: arc text between pomodoro ring and day ring ─────────────────
+    //   battery at ~150°  ·  date at 90° (top)  ·  state at ~30°
+    //   radius sits at the midpoint between RF_MID and RF_OUTER.
     private function _drawTopBar(
         dc          as Dc,
         cx          as Number,
@@ -388,8 +403,7 @@ class ChronoFocusView extends WatchUi.WatchFace {
         battPct     as Number,
         accentColor as Number
     ) as Void {
-        // Vertical position: top of the inner area (≈ cy − R×0.78)
-        var topY = cy - (R.toFloat() * 0.78f).toNumber();
+        var arcR = ((RF_MID + RF_OUTER) / 2.0f * R.toFloat()).toNumber();
 
         var info = Gregorian.info(Time.now(), Time.FORMAT_SHORT);
         var dows = ["SUN","MON","TUE","WED","THU","FRI","SAT"] as Array<String>;
@@ -401,31 +415,29 @@ class ChronoFocusView extends WatchUi.WatchFace {
         var moS = (mo < 10 ? "0" : "") + mo.toString();
         var dyS = (dy < 10 ? "0" : "") + dy.toString();
 
-        var batStr   = "BAT " + battPct.toString() + "%";
+        var batStr   = battPct.toString() + "%";
         var dateStr  = dows[dow - 1] + " " + dyS + "." + moS;
         var stateStr = (_pomState == :focus) ? "FOCUS" :
                        (_pomState == :break) ? "BREAK" : "IDLE";
+        var outStr = batStr + " " + dateStr + " " + stateStr;
 
-        var font = Graphics.FONT_XTINY;
-        var th   = dc.getFontHeight(font);
-        var sep  = " · ";
-        var full = batStr + sep + dateStr + sep + stateStr;
+        var size = 24;
+        var font = Graphics.getVectorFont({
+            :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
+            :size => size
+        });
 
-        // Draw all in muted first to get the combined width
-        var fw = dc.getTextWidthInPixels(full, font);
-        var tx = cx - fw / 2;
-        var ty = topY - th / 2;
-
-        // Piece by piece to set accent on state
-        var batW  = dc.getTextWidthInPixels(batStr + sep + dateStr + sep, font);
-
-        dc.setColor(COLOR_MUTED, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(tx, ty, font, batStr + sep + dateStr + sep,
-            Graphics.TEXT_JUSTIFY_LEFT);
-
-        dc.setColor(accentColor, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(tx + batW, ty, font, stateStr,
-            Graphics.TEXT_JUSTIFY_LEFT);
+        dc.setColor(COLOR_DIM, Graphics.COLOR_TRANSPARENT);
+        dc.drawRadialText(
+            cx,
+            cy,
+            font,
+            outStr,
+            Graphics.TEXT_JUSTIFY_CENTER,
+            90,
+            R-50,
+            Graphics.RADIAL_TEXT_DIRECTION_CLOCKWISE
+        );
     }
 
     // ── CENTER: task / HH:MM:SS / pomodoro block ──────────────────────────────
@@ -439,28 +451,33 @@ class ChronoFocusView extends WatchUi.WatchFace {
         second      as Number,
         accentColor as Number
     ) as Void {
-
-        // ── Task label ──────────────────────────────────────────────────────
-        var taskOff = (R.toFloat() * 0.28f).toNumber();
-        var taskFont = Graphics.FONT_XTINY;
-        var taskStr  = "NOW  " + _focusTask;
-        ChronoUI.UiText.drawCenteredAt(dc, cx, cy - taskOff, taskStr, taskFont, COLOR_DIM);
-
         // ── Large time HH:MM ────────────────────────────────────────────────
         var hh = (hour   < 10 ? "0" : "") + hour.toString();
         var mm = (minute < 10 ? "0" : "") + minute.toString();
         var ss = (second < 10 ? "0" : "") + second.toString();
 
-        var tFont  = Graphics.FONT_NUMBER_HOT;
+        var size = 100;
+        var tFont = Graphics.getVectorFont({
+            :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
+            :size => size
+        });
+
+        var sSize = 50;
+        var sFont = Graphics.getVectorFont({
+            :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
+            :size => sSize
+        });
+
         var tH     = dc.getFontHeight(tFont);
-        var timeOff = (R.toFloat() * 0.06f).toNumber();
-        var tBaseCY = cy - timeOff;
+        // var timeOff = (R.toFloat() * 0.06f).toNumber();
+        var tBaseCY = cy;// - timeOff;
 
         // Compute total width for centering: HH + ":" + MM
         var wHH    = dc.getTextWidthInPixels(hh,   tFont);
         var wColon = dc.getTextWidthInPixels(":",   tFont);
         var wMM    = dc.getTextWidthInPixels(mm,    tFont);
-        var wSec   = dc.getTextWidthInPixels(":" + ss, Graphics.FONT_NUMBER_MILD);
+        var wSec   = dc.getTextWidthInPixels(":" + ss, sFont);
+
         var totalW = wHH + wColon + wMM + 4 + wSec;
         var tx     = cx - totalW / 2;
         var ty     = tBaseCY - tH / 2;
@@ -481,7 +498,6 @@ class ChronoFocusView extends WatchUi.WatchFace {
         tx += wMM + 4;
 
         // :SS (small, muted)
-        var sFont = Graphics.FONT_NUMBER_MILD;
         var sH    = dc.getFontHeight(sFont);
         dc.setColor(0x555555, Graphics.COLOR_TRANSPARENT);
         dc.drawText(tx, tBaseCY - sH / 2, sFont, ":" + ss,
@@ -501,13 +517,21 @@ class ChronoFocusView extends WatchUi.WatchFace {
 
         // Vertical centre divider
         dc.drawLine(cx, sepY1 + 2, cx, sepY2 - 2);
-
         var blockCY = (sepY1 + sepY2) / 2;
 
         // Left half: POM label + countdown
         var pomLabel = "POM " + (_pomCompleted + 1).toString();
-        var pFont    = Graphics.FONT_XTINY;
-        var pValFont = Graphics.FONT_NUMBER_MILD;
+        var pSize = 20;
+        var pFont = Graphics.getVectorFont({
+            :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
+            :size => pSize
+        });
+
+        var pValSize = 20;
+        var pValFont = Graphics.getVectorFont({
+            :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
+            :size => pValSize
+        });
         var leftCX   = cx - blockW / 4;
 
         var remTotal = _segTotal - _segElapsed;
@@ -527,7 +551,11 @@ class ChronoFocusView extends WatchUi.WatchFace {
         var rightCX   = cx + blockW / 4;
         var cmpStr    = _pomCompleted.toString();
         var totalStr  = "/" + _pomGoal.toString();
-        var cmpFont   = Graphics.FONT_NUMBER_MILD;
+        var cmpSize = 20;
+        var cmpFont = Graphics.getVectorFont({
+            :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
+            :size => cmpSize
+        });
 
         ChronoUI.UiText.drawCenteredAt(dc, rightCX, sepY1 + 7, "SET", pFont, 0x555555);
 

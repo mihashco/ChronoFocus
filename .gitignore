@@ -1,3 +1,8 @@
 .claude
 bin/
-
+ChronoFocus.prg
+ChronoFocus.prg.debug.xml
+external-mir
+gen/
+internal-mir
+mir
