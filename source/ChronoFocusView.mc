@@ -164,7 +164,7 @@ class ChronoFocusView extends WatchUi.WatchFace {
         // _drawCurrentMarker (dc, cx, cy, R, dayElapsed, dayTotal, COLOR_BREAK_ACT);
         _drawTopBar        (dc, cx, cy, R, battPct, accentColor);
         _drawCenterContent (dc, cx, cy, R, ct.hour, ct.min, ct.sec, accentColor);
-        // _drawComplications (dc, cx, cy, R, hr);
+        _drawComplications (dc, cx, cy, R, hr);
         // _drawBottomBar     (dc, cx, cy, R, steps, stepsGoal, dailyGoalPct, accentColor);
     }
 
@@ -504,8 +504,8 @@ class ChronoFocusView extends WatchUi.WatchFace {
             Graphics.TEXT_JUSTIFY_LEFT);
 
         // ── Pomodoro separator lines + block ────────────────────────────────
-        var sepOff1 = (R.toFloat() * 0.16f).toNumber();
-        var sepOff2 = (R.toFloat() * 0.30f).toNumber();
+        var sepOff1 = (R.toFloat() * 0.22f).toNumber();
+        var sepOff2 = (R.toFloat() * 0.36f).toNumber();
         var sepY1   = cy + sepOff1;
         var sepY2   = cy + sepOff2;
         var blockW  = (R.toFloat() * 1.0f).toNumber();  // full inner width
@@ -584,9 +584,20 @@ class ChronoFocusView extends WatchUi.WatchFace {
         R  as Number,
         hr as Number
     ) as Void {
-        var offset = (R.toFloat() * 0.55f).toNumber();
-        var lFont  = Graphics.FONT_XTINY;
-        var vFont  = Graphics.FONT_NUMBER_MILD;
+        var offset = (R.toFloat() * 0.88f).toNumber();
+
+        var lSize = 20;
+        var lFont = Graphics.getVectorFont({
+            :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
+            :size => lSize
+        });
+
+        var vSize = 20;
+        var vFont = Graphics.getVectorFont({
+            :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
+            :size => vSize
+        });
+
 
         // ── Left: Heart Rate ─────────────────────────────────────────────────
         var lx     = cx - offset;
@@ -599,7 +610,7 @@ class ChronoFocusView extends WatchUi.WatchFace {
         // ── Right: Streak ────────────────────────────────────────────────────
         var rx = cx + offset;
 
-        ChronoUI.UiText.drawCenteredAt(dc, rx, cy - 14, "STREAK",       lFont, 0x555555);
+        ChronoUI.UiText.drawCenteredAt(dc, rx, cy - 14, "SER",       lFont, 0x555555);
         ChronoUI.UiText.drawCenteredAt(dc, rx, cy + 2,  _streak.toString(), vFont, COLOR_FG);
         ChronoUI.UiText.drawCenteredAt(dc, rx, cy + 16, "DAYS",         lFont, COLOR_STEPS_FG);
     }
