@@ -48,8 +48,7 @@ class ChronoFocusView extends WatchUi.WatchFace {
     private const COLOR_BREAK_ACT as Number = 0x7DB6D1; // blue  – active break
     private const COLOR_IDLE_ACT  as Number = 0x888888;
     private const COLOR_FOCUS_PST as Number = 0x3A5A3E; // past focus segments
-    private const COLOR_FOCUS_FUT as Number = 0x383838; // future focus segments
-    private const COLOR_BREAK_TRK as Number = 0x1A1A1A; // break track (bg shade)
+
     private const COLOR_STEPS_FG  as Number = 0xC8A64A; // gold – steps ring
     private const COLOR_HR_RED    as Number = 0xC84A4A;
     private const COLOR_RING_BG   as Number = 0x1A1A1A;
@@ -89,8 +88,6 @@ class ChronoFocusView extends WatchUi.WatchFace {
     private var _streak       as Number;
     private var _nextEvTime   as String;
 
-    // ── Pre-built day segments (focus/break sequence for the work day) ────────
-    private var _segments as Array;
 
     // ─────────────────────────────────────────────────────────────────────────
     // LIFECYCLE
@@ -108,8 +105,6 @@ class ChronoFocusView extends WatchUi.WatchFace {
         _focusTask    = "Q3 roadmap";
         _streak       = 14;
         _nextEvTime   = "13:30";
-
-        _segments = _buildSegments();
     }
 
     public function onLayout(dc as Dc) as Void {
@@ -231,10 +226,11 @@ class ChronoFocusView extends WatchUi.WatchFace {
         dc.clear();
     }
 
-    // ── DAY RING: two symmetric arcs, same radius ─────────────────────────────
-    //   AM ring (top):    ARC_START → ARC_START-DAY_HALF_SPAN  (160°→20°)
-    //   PM ring (bottom): DAY_PM_START → DAY_PM_START-DAY_HALF_SPAN (-20°→-160°)
-    //   ~40° gap on each side (3 and 9 o'clock) for complications.
+    // ── DAY RING: 8 fixed focus slots (4 per half), independent of clock time ───
+    //   Top ring (AM):    slots 0-3, arc 160°→20°
+    //   Bottom ring (PM): slots 4-7, arc -20°→-160°
+    //   Progress driven by _pomCompleted, not work-start/end time.
+    //   Default: gray. Completed: dim green. Current: accent.
     private function _drawDayRing(
         dc          as Dc,
         cx          as Number,
@@ -244,63 +240,59 @@ class ChronoFocusView extends WatchUi.WatchFace {
         dayTotal    as Number,
         accentColor as Number
     ) as Void {
-        var rOuter  = (R.toFloat() * RF_OUTER).toNumber();
-        var halfMin = dayTotal.toFloat() / 2.0f;
-        var amEnd   = ARC_START    - DAY_HALF_SPAN;  //  20°
-        var pmEnd   = DAY_PM_START - DAY_HALF_SPAN;  // -160°
+        var rOuter   = (R.toFloat() * RF_OUTER).toNumber();
+        // Layout per half-ring: [4 slots] bigGap [4 slots], 6 small gaps total.
+        // smallGap = gap within a group, bigGap = gap between groups (25-min break).
+        var smallGap = 4.0f;
+        var bigGap   = 12.0f;
+        var slotSpan = (DAY_HALF_SPAN - 6.0f * smallGap - bigGap) / 8.0f; // ~13° each
 
         // ── Background tracks ─────────────────────────────────────────────────
         dc.setColor(COLOR_RING_BG, Graphics.COLOR_TRANSPARENT);
         dc.setPenWidth(10);
         dc.drawArc(cx, cy, rOuter, Graphics.ARC_CLOCKWISE,
-            ARC_START.toNumber(),    amEnd.toNumber());
+            ARC_START.toNumber(),    (ARC_START    - DAY_HALF_SPAN).toNumber());
         dc.drawArc(cx, cy, rOuter, Graphics.ARC_CLOCKWISE,
-            DAY_PM_START.toNumber(), pmEnd.toNumber());
+            DAY_PM_START.toNumber(), (DAY_PM_START - DAY_HALF_SPAN).toNumber());
 
-        // ── Pomodoro segments ─────────────────────────────────────────────────
-        for (var i = 0; i < _segments.size(); i++) {
-            var seg  = _segments[i] as Dictionary;
-            var kind = seg[:kind]   as Symbol;
-            var sF   = (seg[:start] as Number).toFloat();
-            var eF   = (seg[:end]   as Number).toFloat();
+        // ── 16 focus slots: 4 groups of 4 (top:[0-3][4-7], bottom:[8-11][12-15]) ──
+        for (var i = 0; i < 16; i++) {
+            var isBottom = (i >= 8);
+            var slotIdx  = isBottom ? (i - 8) : i;  // 0-7 within each half
 
-            var isPast    = (seg[:end]   as Number) <= dayElapsed;
-            var isCurrent = dayElapsed   >= (seg[:start] as Number) &&
-                            dayElapsed   <  (seg[:end]   as Number);
+            var startDeg = isBottom ? DAY_PM_START : ARC_START;
+            var a1;
+            if (slotIdx < 4) {
+                a1 = startDeg - slotIdx.toFloat() * (slotSpan + smallGap);
+            } else {
+                // skip over bigGap after the first group of 4
+                a1 = startDeg - (4.0f * slotSpan + 3.0f * smallGap + bigGap
+                     + (slotIdx - 4).toFloat() * (slotSpan + smallGap));
+            }
+            var a2 = a1 - slotSpan;
+
+            var isDone    = (i < _pomCompleted);
+            var isCurrent = (i == _pomCompleted) && (_pomState != :idle);
 
             var col;
-            var pw;
-            if (kind == :focus) {
-                pw  = 10;
-                col = isPast    ? COLOR_FOCUS_PST :
-                      isCurrent ? accentColor      :
-                                  COLOR_FOCUS_FUT;
+            if (isCurrent) {
+                col = accentColor;
+            } else if (isDone) {
+                col = COLOR_FOCUS_PST;
             } else {
-                pw  = 4;
-                col = isPast ? COLOR_DIMLINE : COLOR_BREAK_TRK;
+                col = COLOR_DIM;
             }
-            dc.setPenWidth(pw);
+
+            dc.setPenWidth(10);
             dc.setColor(col, Graphics.COLOR_TRANSPARENT);
+            dc.drawArc(cx, cy, rOuter, Graphics.ARC_CLOCKWISE,
+                a1.toNumber(), a2.toNumber());
 
-            // AM portion — top arc
-            if (sF < halfMin) {
-                var s  = sF;
-                var e  = (eF < halfMin) ? eF : halfMin;
-                var a1 = ARC_START - (s / halfMin) * DAY_HALF_SPAN;
-                var a2 = ARC_START - (e / halfMin) * DAY_HALF_SPAN;
-                dc.drawArc(cx, cy, rOuter, Graphics.ARC_CLOCKWISE,
-                    a1.toNumber(), (a2 + 0.4f).toNumber());
-            }
-
-            // PM portion — bottom arc
-            if (eF > halfMin) {
-                var s  = (sF > halfMin) ? sF : halfMin;
-                var e  = eF;
-                var a1 = DAY_PM_START - ((s - halfMin) / halfMin) * DAY_HALF_SPAN;
-                var a2 = DAY_PM_START - ((e - halfMin) / halfMin) * DAY_HALF_SPAN;
-                dc.drawArc(cx, cy, rOuter, Graphics.ARC_CLOCKWISE,
-                    a1.toNumber(), (a2 + 0.4f).toNumber());
-            }
+            // Rounded caps
+            var p1 = ChronoUI.UiMath.pointOnCircle(a1, cx, cy, rOuter);
+            dc.fillCircle(p1[0], p1[1], 5);
+            var p2 = ChronoUI.UiMath.pointOnCircle(a2, cx, cy, rOuter);
+            dc.fillCircle(p2[0], p2[1], 5);
         }
     }
 
@@ -708,35 +700,4 @@ class ChronoFocusView extends WatchUi.WatchFace {
         return COLOR_IDLE_ACT;
     }
 
-    /**
-     * Build the sequence of focus/break segments for the full work day.
-     * Returns Array<Dictionary> each with :kind, :start, :end (minutes from 08:00).
-     */
-    private function _buildSegments() as Array {
-        var segs    = [] as Array<Dictionary>;
-        var dayMins = (WORK_END_H - WORK_START_H) * 60;
-        var elapsed = 0;
-        var pomIdx  = 0;
-
-        while (elapsed < dayMins) {
-            // Focus block
-            var fEnd = elapsed + POM_FOCUS;
-            if (fEnd > dayMins) { fEnd = dayMins; }
-            segs.add({ :kind => :focus, :start => elapsed, :end => fEnd, :idx => pomIdx });
-            elapsed = fEnd;
-            if (elapsed >= dayMins) { break; }
-
-            // Break block (long every 4th pomodoro)
-            var isLong = ((pomIdx + 1) % 4 == 0);
-            var bLen   = isLong ? POM_LONG_BRK : POM_BREAK;
-            var bEnd   = elapsed + bLen;
-            if (bEnd > dayMins) { bEnd = dayMins; }
-            var bKind  = isLong ? :longbreak : :break;
-            segs.add({ :kind => bKind, :start => elapsed, :end => bEnd, :idx => pomIdx });
-            elapsed = bEnd;
-            pomIdx++;
-        }
-
-        return segs;
-    }
 }

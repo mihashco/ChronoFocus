@@ -6,3 +6,4 @@ external-mir
 gen/
 internal-mir
 mir
+releases
