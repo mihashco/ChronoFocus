@@ -93,9 +93,9 @@ class ChronoFocusView extends WatchUi.WatchFace {
     private const DAY_PM_START  as Float = -20.0f;
 
     // ── Pomodoro timing constants (seconds) ──────────────────────────────────
-    private const POM_FOCUS_S      as Number = 30;  // 25 min
-    private const POM_BREAK_S      as Number = 10;   //  5 min
-    private const POM_LONG_BREAK_S as Number = 30;  // 25 min — every 4 sessions
+    private const POM_FOCUS_S      as Number = 1500;  // 1500 25 min
+    private const POM_BREAK_S      as Number = 300;  //  5 min
+    private const POM_LONG_BREAK_S as Number = 1500;  // 25 min — every 4 sessions
 
     // ── Pomodoro state ────────────────────────────────────────────────────────
     // :idle    – waiting for first tap of the day
@@ -206,11 +206,6 @@ class ChronoFocusView extends WatchUi.WatchFace {
             hr = aInfo.currentHeartRate;
         }
 
-        var dailyGoalPct = (stepsGoal > 0)
-            ? ((steps.toFloat() / stepsGoal.toFloat()) * 100.0f + 0.5f).toNumber()
-            : 0;
-        if (dailyGoalPct > 100) { dailyGoalPct = 100; }
-
         var accentColor = _accentColor();
 
         // ── Draw layers (back to front) ──────────────────────────────────────
@@ -222,7 +217,7 @@ class ChronoFocusView extends WatchUi.WatchFace {
         _drawTopBar        (dc, cx, cy, R, battPct, accentColor);
         _drawCenterContent (dc, cx, cy, R, ct.hour, ct.min, ct.sec, accentColor);
         _drawComplications (dc, cx, cy, R, hr);
-        _drawBottomBar     (dc, cx, cy, R, steps, stepsGoal, dailyGoalPct, accentColor);
+        _drawBottomBar(dc, cx, cy, R);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -600,87 +595,34 @@ class ChronoFocusView extends WatchUi.WatchFace {
         ChronoUI.UiText.drawCenteredAt(dc, rx, cy + 34, "BAT",         lFont, COLOR_STEPS_FG);
     }
 
-    // ── BOTTOM BAR: steps · goal% · → next event ─────────────────────────────
-    private function _drawBottomBar(
-        dc           as Dc,
-        cx           as Number,
-        cy           as Number,
-        R            as Number,
-        steps        as Number,
-        stepsGoal    as Number,
-        dailyGoalPct as Number,
-        accentColor  as Number
-    ) as Void {
-        var botY = cy + (R.toFloat() * 0.75f).toNumber();
-        var font = Graphics.FONT_XTINY;
-        var th   = dc.getFontHeight(font);
-        var ty   = botY - th / 2;
+    // ── BOTTOM BAR: alternate timezone, drawn along bottom arc ───────────────
+    private function _drawBottomBar(dc as Dc, cx as Number, cy as Number, R as Number) as Void {
+        var label   = Application.Properties.getValue("AltTzLabel")  as String;
+        var offsetH = Application.Properties.getValue("AltTzOffset") as Number;
+        if (label == null || offsetH == null) { return; }
 
-        // Format steps
-        var stepsStr;
-        if (steps >= 10000) {
-            stepsStr = (steps / 1000).toString() + "K";
-        } else if (steps >= 1000) {
-            var k = steps / 1000;
-            var d = (steps % 1000) / 100;
-            stepsStr = k.toString() + "." + d.toString() + "K";
-        } else {
-            stepsStr = steps.toString();
-        }
-        var goalKStr   = (stepsGoal / 1000).toString() + "K";
-        var stepsLabel = stepsStr + "/" + goalKStr;
-        var goalLabel  = "GOAL " + dailyGoalPct.toString() + "%";
-        var evLabel    = "\u2192 " + _nextEvTime;  // → arrow
-        var dot        = " · ";
+        var utcMins = (Time.now().value() / 60) % 1440;
+        var altMins = ((utcMins + offsetH * 60) % 1440 + 1440) % 1440;
+        var altH      = altMins / 60;
+        var altM      = altMins % 60;
 
-        // Two-pass draw: muted text, then accent overrides
-        var leftStr = "  " + stepsLabel + dot + "GOAL ";    // steps arrow space
-        var leftW   = dc.getTextWidthInPixels(leftStr, font);
-        var pctStr  = dailyGoalPct.toString() + "%";
-        var pctW    = dc.getTextWidthInPixels(pctStr, font);
-        var midStr  = dot;
-        var midW    = dc.getTextWidthInPixels(midStr, font);
-        var evW     = dc.getTextWidthInPixels(evLabel, font);
-        var arrowW  = dc.getTextWidthInPixels("▲ ", font);
+        var hh     = (altH < 10 ? "0" : "") + altH.toString();
+        var mm     = (altM < 10 ? "0" : "") + altM.toString();
+        var outStr = label + " " + hh + ":" + mm;
 
-        var fullW = arrowW + dc.getTextWidthInPixels(stepsLabel, font) +
-                    dc.getTextWidthInPixels(dot, font) +
-                    dc.getTextWidthInPixels("GOAL ", font) +
-                    pctW + midW + evW;
-        var startX = cx - fullW / 2;
+        var font = Graphics.getVectorFont({
+            :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
+            :size => 24
+        });
 
-        // Steps triangle
-        dc.setColor(COLOR_STEPS_FG, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(startX, ty, font, "▲", Graphics.TEXT_JUSTIFY_LEFT);
-        startX += dc.getTextWidthInPixels("▲", font) + 3;
-
-        // Steps count
-        dc.setColor(COLOR_MUTED, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(startX, ty, font, stepsLabel, Graphics.TEXT_JUSTIFY_LEFT);
-        startX += dc.getTextWidthInPixels(stepsLabel, font);
-
-        // Separator
-        dc.setColor(0x333333, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(startX, ty, font, dot, Graphics.TEXT_JUSTIFY_LEFT);
-        startX += dc.getTextWidthInPixels(dot, font);
-
-        // "GOAL" muted, pct accented
-        dc.setColor(COLOR_MUTED, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(startX, ty, font, "GOAL ", Graphics.TEXT_JUSTIFY_LEFT);
-        startX += dc.getTextWidthInPixels("GOAL ", font);
-
-        dc.setColor(accentColor, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(startX, ty, font, pctStr, Graphics.TEXT_JUSTIFY_LEFT);
-        startX += pctW;
-
-        // Separator
-        dc.setColor(0x333333, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(startX, ty, font, dot, Graphics.TEXT_JUSTIFY_LEFT);
-        startX += dc.getTextWidthInPixels(dot, font);
-
-        // Next event
-        dc.setColor(COLOR_MUTED, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(startX, ty, font, evLabel, Graphics.TEXT_JUSTIFY_LEFT);
+        dc.setColor(COLOR_DIM, Graphics.COLOR_TRANSPARENT);
+        dc.drawRadialText(
+            cx, cy, font, outStr,
+            Graphics.TEXT_JUSTIFY_CENTER,
+            270,
+            R - 35,
+            Graphics.RADIAL_TEXT_DIRECTION_COUNTER_CLOCKWISE
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -13,4 +13,7 @@
     <string id="ColorBlue">Blue</string>
     <string id="ColorRed">Red</string>
 
+    <string id="AltTzLabelTitle">Alt. Timezone Label</string>
+    <string id="AltTzOffsetTitle">Alt. Timezone UTC Offset (h)</string>
+
 </strings>

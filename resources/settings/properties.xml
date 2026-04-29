@@ -4,4 +4,7 @@
     <property id="ForegroundColor" type="number">0xFF0000</property>
     <property id="UseMilitaryFormat" type="boolean">false</property>
 
+    <property id="AltTzLabel" type="string">KST</property>
+    <property id="AltTzOffset" type="number">9</property>
+
 </properties>
