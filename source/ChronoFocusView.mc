@@ -39,6 +39,23 @@ import Toybox.Notifications;
 // Convenient aliases to ChronoUI barrel classes
 using ChronoUIBarrel.ChronoUI as ChronoUI;
 
+class DataProvider {
+    public function getBodyBattery() {
+        var value = "--";
+
+        if (Toybox has :SensorHistory && SensorHistory has :getBodyBatteryHistory) {
+            var iter = SensorHistory.getBodyBatteryHistory({:period => 1, :order => SensorHistory.ORDER_NEWEST_FIRST});
+            var sample = iter.next();
+
+            if (sample != null && sample.data != null) {
+                value = sample.data.toNumber();
+            }
+        }
+
+        return value;
+    }
+}
+
 class ChronoFocusView extends WatchUi.WatchFace {
 
     // ── Palette ───────────────────────────────────────────────────────────────
@@ -93,8 +110,9 @@ class ChronoFocusView extends WatchUi.WatchFace {
     private var _pomGoal       as Number        = 16;
     private var _timer         as Timer.Timer?  = null; // started from first onUpdate()
     private var _focusTask    as String;
-    private var _streak       as Number;
     private var _nextEvTime   as String;
+
+    private var _dataProvider as DataProvider;
 
     // ─────────────────────────────────────────────────────────────────────────
     // LIFECYCLE
@@ -124,8 +142,9 @@ class ChronoFocusView extends WatchUi.WatchFace {
         WatchFace.initialize();
         _pomGoal    = 16;
         _focusTask  = "Q3 roadmap";
-        _streak     = 14;
         _nextEvTime = "13:30";
+
+        _dataProvider = new DataProvider();
         _loadState();
     }
 
@@ -203,7 +222,7 @@ class ChronoFocusView extends WatchUi.WatchFace {
         _drawTopBar        (dc, cx, cy, R, battPct, accentColor);
         _drawCenterContent (dc, cx, cy, R, ct.hour, ct.min, ct.sec, accentColor);
         _drawComplications (dc, cx, cy, R, hr);
-        // _drawBottomBar     (dc, cx, cy, R, steps, stepsGoal, dailyGoalPct, accentColor);
+        _drawBottomBar     (dc, cx, cy, R, steps, stepsGoal, dailyGoalPct, accentColor);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -236,7 +255,6 @@ class ChronoFocusView extends WatchUi.WatchFace {
     /** Update user-configurable data (call after loading from AppStorage). */
     public function setMeta(task as String, streak as Number, nextEvTime as String) as Void {
         _focusTask  = task;
-        _streak     = streak;
         _nextEvTime = nextEvTime;
     }
 
@@ -317,36 +335,6 @@ class ChronoFocusView extends WatchUi.WatchFace {
             var p2 = ChronoUI.UiMath.pointOnCircle(a2, cx, cy, rOuter);
             dc.fillCircle(p2[0], p2[1], 5);
         }
-    }
-
-    // ── CURRENT POSITION MARKER ──────────────────────────────────────────────
-    private function _drawCurrentMarker(
-        dc          as Dc,
-        cx          as Number,
-        cy          as Number,
-        R           as Number,
-        dayElapsed  as Number,
-        dayTotal    as Number,
-        accentColor as Number
-    ) as Void {
-        var rOuter  = (R.toFloat() * RF_OUTER).toNumber();
-        var halfMin = dayTotal.toFloat() / 2.0f;
-        var isAM    = dayElapsed.toFloat() <= halfMin;
-
-        var startDeg = isAM ? ARC_START    : DAY_PM_START;
-        var prog     = isAM
-            ? dayElapsed.toFloat() / halfMin
-            : (dayElapsed.toFloat() - halfMin) / halfMin;
-
-        ChronoUI.RadialMarker.draw(dc, prog, {
-            :cx             => cx,            :cy           => cy,
-            :radius         => rOuter,
-            :startDeg       => startDeg,      :sweepDeg     => DAY_HALF_SPAN,
-            :color          => accentColor,   :size         => 6,
-            :style          => :dot,
-            :trail          => true,          :trailDeg     => 12.0f,
-            :trailThickness => 2,             :trailColor   => accentColor
-        });
     }
 
     // ── MID RING: pomodoro-segment progress ───────────────────────────────────
@@ -527,35 +515,33 @@ class ChronoFocusView extends WatchUi.WatchFace {
             Graphics.TEXT_JUSTIFY_LEFT);
 
         // ── Pomodoro separator lines + block ────────────────────────────────
-        var sepOff1 = (R.toFloat() * 0.22f).toNumber();
-        var sepOff2 = (R.toFloat() * 0.36f).toNumber();
-        var sepY1   = cy + sepOff1;
-        var sepY2   = cy + sepOff2;
+        var sepOff1 = (R.toFloat() * 0.42f).toNumber();
+        var sepOff2 = (R.toFloat() * 0.22f).toNumber();
+        var sepY1   = cy - sepOff1;
+        var sepY2   = cy - sepOff2;
         var blockW  = (R.toFloat() * 1.0f).toNumber();  // full inner width
 
         dc.setColor(COLOR_DIMLINE, Graphics.COLOR_TRANSPARENT);
         dc.setPenWidth(1);
-        dc.drawLine(cx - blockW / 2, sepY1, cx + blockW / 2, sepY1);
+        // dc.drawLine(cx - blockW / 2, sepY1, cx + blockW / 2, sepY1);
         dc.drawLine(cx - blockW / 2, sepY2, cx + blockW / 2, sepY2);
 
-        // Vertical centre divider
-        dc.drawLine(cx, sepY1 + 2, cx, sepY2 - 2);
         var blockCY = (sepY1 + sepY2) / 2;
 
         // Left half: POM label + countdown
         var pomLabel = "POM " + ((_pomState == :waiting) ? _pomCompleted : (_pomCompleted + 1)).toString();
-        var pSize = 20;
+        var pSize = 28;
         var pFont = Graphics.getVectorFont({
             :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
             :size => pSize
         });
 
-        var pValSize = 20;
+        var pValSize = 50;
         var pValFont = Graphics.getVectorFont({
             :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
             :size => pValSize
         });
-        var leftCX   = cx - blockW / 4;
+        var leftCX   = cx;
 
         var remStr;
         if (_pomState == :idle) {
@@ -571,36 +557,8 @@ class ChronoFocusView extends WatchUi.WatchFace {
                    + (remS < 10 ? "0" : "") + remS.toString();
         }
 
-        ChronoUI.UiText.drawCenteredAt(dc, leftCX, sepY1 + 7,  pomLabel, pFont, 0x555555);
-        ChronoUI.UiText.drawCenteredAt(dc, leftCX, blockCY + 5, remStr,  pValFont, accentColor);
-
-        // Right half: SET X / total
-        var rightCX   = cx + blockW / 4;
-        var cmpStr    = _pomCompleted.toString();
-        var totalStr  = "/" + _pomGoal.toString();
-        var cmpSize = 20;
-        var cmpFont = Graphics.getVectorFont({
-            :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
-            :size => cmpSize
-        });
-
-        ChronoUI.UiText.drawCenteredAt(dc, rightCX, sepY1 + 7, "SET", pFont, 0x555555);
-
-        var cmpW  = dc.getTextWidthInPixels(cmpStr,   cmpFont);
-        var totW  = dc.getTextWidthInPixels(totalStr,  pFont);
-        var rowW  = cmpW + totW;
-        var rowX  = rightCX - rowW / 2;
-        var rowCY = blockCY + 5;
-        var cmpH  = dc.getFontHeight(cmpFont);
-        var totH  = dc.getFontHeight(pFont);
-
-        dc.setColor(COLOR_FG, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(rowX, rowCY - cmpH / 2, cmpFont, cmpStr,
-            Graphics.TEXT_JUSTIFY_LEFT);
-
-        dc.setColor(0x555555, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(rowX + cmpW, rowCY - totH / 2, pFont, totalStr,
-            Graphics.TEXT_JUSTIFY_LEFT);
+        ChronoUI.UiText.drawCenteredAt(dc, leftCX, sepY1 - 20,  pomLabel, pFont, 0x555555);
+        ChronoUI.UiText.drawCenteredAt(dc, leftCX, blockCY - 5, remStr,  pValFont, accentColor);
     }
 
     // ── LEFT/RIGHT COMPLICATIONS ──────────────────────────────────────────────
@@ -613,13 +571,13 @@ class ChronoFocusView extends WatchUi.WatchFace {
     ) as Void {
         var offset = (R.toFloat() * 0.88f).toNumber();
 
-        var lSize = 20;
+        var lSize = 28;
         var lFont = Graphics.getVectorFont({
             :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
             :size => lSize
         });
 
-        var vSize = 20;
+        var vSize = 28;
         var vFont = Graphics.getVectorFont({
             :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
             :size => vSize
@@ -630,16 +588,16 @@ class ChronoFocusView extends WatchUi.WatchFace {
         var lx     = cx - offset;
         var hrStr  = (hr > 0) ? hr.toString() : "--";
 
-        ChronoUI.UiText.drawCenteredAt(dc, lx, cy - 14, "HR",    lFont, 0x555555);
-        ChronoUI.UiText.drawCenteredAt(dc, lx, cy + 2,  hrStr,   vFont, COLOR_FG);
-        ChronoUI.UiText.drawCenteredAt(dc, lx, cy + 16, "BPM",   lFont, COLOR_HR_RED);
+        ChronoUI.UiText.drawCenteredAt(dc, lx, cy - 34, "HR",    lFont, 0x555555);
+        ChronoUI.UiText.drawCenteredAt(dc, lx, cy,  hrStr,   vFont, COLOR_FG);
+        ChronoUI.UiText.drawCenteredAt(dc, lx, cy + 34, "BPM",   lFont, COLOR_HR_RED);
 
-        // ── Right: Streak ────────────────────────────────────────────────────
+        // ── Right: Body Bat ────────────────────────────────────────────────────
         var rx = cx + offset;
 
-        ChronoUI.UiText.drawCenteredAt(dc, rx, cy - 14, "SER",       lFont, 0x555555);
-        ChronoUI.UiText.drawCenteredAt(dc, rx, cy + 2,  _streak.toString(), vFont, COLOR_FG);
-        ChronoUI.UiText.drawCenteredAt(dc, rx, cy + 16, "DAYS",         lFont, COLOR_STEPS_FG);
+        ChronoUI.UiText.drawCenteredAt(dc, rx, cy - 34, "BD",       lFont, 0x555555);
+        ChronoUI.UiText.drawCenteredAt(dc, rx, cy,  _dataProvider.getBodyBattery().toString(), vFont, COLOR_FG);
+        ChronoUI.UiText.drawCenteredAt(dc, rx, cy + 34, "BAT",         lFont, COLOR_STEPS_FG);
     }
 
     // ── BOTTOM BAR: steps · goal% · → next event ─────────────────────────────
