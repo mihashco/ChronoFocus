@@ -1,7 +1,10 @@
 import Toybox.Application;
 import Toybox.Lang;
 import Toybox.WatchUi;
+import Toybox.System;
+import Toybox.Background;
 
+(:background)
 class ChronoFocusApp extends Application.AppBase {
     private var _view as ChronoFocusView?;
 
@@ -20,6 +23,15 @@ class ChronoFocusApp extends Application.AppBase {
         var delegate = new ChronoFocusDelegate(view);
         _view = view;
         return [view, delegate];
+    }
+
+    (:background)
+    public function getServiceDelegate() as [System.ServiceDelegate] {
+        return [new ChronoFocusServiceDelegate()];
+    }
+
+    public function onBackgroundData(data as Application.PersistableType) as Void {
+        WatchUi.requestUpdate();
     }
 }
 

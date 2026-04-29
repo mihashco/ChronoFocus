@@ -22,6 +22,8 @@
 //   ChronoUIBarrel.ChronoUI.UiText   (drawCenteredAt)
 // ============================================================
 
+import Toybox.Application;
+import Toybox.Timer;
 import Toybox.Graphics;
 import Toybox.Lang;
 import Toybox.WatchUi;
@@ -31,6 +33,8 @@ import Toybox.ActivityMonitor;
 import Toybox.Activity;
 import Toybox.Time;
 import Toybox.Time.Gregorian;
+import Toybox.Background;
+import Toybox.Notifications;
 
 // Convenient aliases to ChronoUI barrel classes
 using ChronoUIBarrel.ChronoUI as ChronoUI;
@@ -71,40 +75,58 @@ class ChronoFocusView extends WatchUi.WatchFace {
     private const DAY_HALF_SPAN as Float = 140.0f;
     private const DAY_PM_START  as Float = -20.0f;
 
-    // ── Work-day / pomodoro constants ─────────────────────────────────────────
-    private const WORK_START_H as Number = 8;  // 08:00
-    private const WORK_END_H   as Number = 16; // 18:00
-    private const POM_FOCUS    as Number = 25; // minutes
-    private const POM_BREAK    as Number = 5;  // minutes
-    private const POM_LONG_BRK as Number = 15; // long break every 4 poms
+    // ── Pomodoro timing constants (seconds) ──────────────────────────────────
+    private const POM_FOCUS_S      as Number = 30;  // 25 min
+    private const POM_BREAK_S      as Number = 10;   //  5 min
+    private const POM_LONG_BREAK_S as Number = 30;  // 25 min — every 4 sessions
 
-    // ── Pomodoro state (managed by this view; set from delegate) ──────────────
-    private var _pomState     as Symbol;  // :focus | :break | :idle
-    private var _segElapsed   as Float;   // minutes elapsed in current segment
-    private var _segTotal     as Float;   // total minutes for current segment
-    private var _pomCompleted as Number;
-    private var _pomGoal      as Number;  // target pomodoros for the day
+    // ── Pomodoro state ────────────────────────────────────────────────────────
+    // :idle    – waiting for first tap of the day
+    // :focus   – 25-min countdown running
+    // :break   –  5-min break countdown running (auto after focus ends)
+    // :waiting – break done, waiting for upper tap to start next focus
+    private var _pomState      as Symbol        = :idle;
+    private var _segElapsed    as Float         = 0.0f;
+    private var _segTotal      as Float         = 0.0f;
+    private var _segStartEpoch as Number        = 0;    // epoch (s) when segment started
+    private var _pomCompleted  as Number        = 0;
+    private var _pomGoal       as Number        = 16;
+    private var _timer         as Timer.Timer?  = null; // started from first onUpdate()
     private var _focusTask    as String;
     private var _streak       as Number;
     private var _nextEvTime   as String;
 
-
     // ─────────────────────────────────────────────────────────────────────────
     // LIFECYCLE
     // ─────────────────────────────────────────────────────────────────────────
+    private function _scheduleWakeEvent(secondsFromNow as Number) as Void {
+        if (Background has :registerForTemporalEvent) {
+            try {
+                Background.deleteTemporalEvent();
+            } catch (ex instanceof Lang.Exception) {}
+            try {
+                var targetTime = Time.now().add(new Time.Duration(secondsFromNow));
+                Background.registerForTemporalEvent(targetTime);
+            } catch (ex instanceof Lang.Exception) {}
+        }
+    }
+
+    private function _cancelWakeEvent() as Void {
+        if (Background has :deleteTemporalEvent) {
+            try {
+                Background.deleteTemporalEvent();
+            } catch (ex instanceof Lang.Exception) {
+            }
+        }
+    }
 
     public function initialize() {
         WatchFace.initialize();
-
-        // Default / demo pomodoro state — replace with AppStorage persistence
-        _pomState     = :focus;
-        _segElapsed   = 12.0f;   // 12 min into current focus
-        _segTotal     = POM_FOCUS.toFloat();
-        _pomCompleted = 3;
-        _pomGoal      = 12;
-        _focusTask    = "Q3 roadmap";
-        _streak       = 14;
-        _nextEvTime   = "13:30";
+        _pomGoal    = 16;
+        _focusTask  = "Q3 roadmap";
+        _streak     = 14;
+        _nextEvTime = "13:30";
+        _loadState();
     }
 
     public function onLayout(dc as Dc) as Void {
@@ -112,7 +134,30 @@ class ChronoFocusView extends WatchUi.WatchFace {
     }
 
     public function onUpdate(dc as Dc) as Void {
-        System.println("Test onUpdate Function");
+        // Start 1-second timer once from onUpdate() — the only UI context that
+        // allows Timer.start() for watchfaces without a permission crash.
+        if (_timer == null) {
+            var t = new Timer.Timer();
+            t.start(method(:tickSecond), 1000, true);
+            _timer = t;
+        }
+
+        // Recompute elapsed from wall clock so it is accurate even after
+        // sleep/wake cycles where the timer was paused by the OS.
+        if ((_pomState == :focus || _pomState == :break) && _segStartEpoch > 0) {
+            _segElapsed = (Time.now().value().toNumber() - _segStartEpoch).toFloat();
+            if (_segElapsed >= _segTotal) {
+                if (_pomState == :focus) {
+                    _pomCompleted++;
+                    _startBreak();
+                } else {
+                    _toWaiting();
+                }
+            }
+        }
+
+        _checkDayReset();
+
         var sw  = dc.getWidth();
         var sh  = dc.getHeight();
         var cx  = (sw / 2).toNumber();
@@ -124,10 +169,8 @@ class ChronoFocusView extends WatchUi.WatchFace {
         var sysStats    = System.getSystemStats();
         var battPct     = (sysStats.battery + 0.5f).toNumber(); // 0–100
 
-        var dayTotal    = (WORK_END_H - WORK_START_H) * 60;     // 600 min
-        var dayElapsed  = (ct.hour - WORK_START_H) * 60 + ct.min;
-        if (dayElapsed < 0)        { dayElapsed = 0; }
-        if (dayElapsed > dayTotal) { dayElapsed = dayTotal; }
+        var dayTotal   = 0;
+        var dayElapsed = 0;
 
         // Activity
         var actInfo   = ActivityMonitor.getInfo();
@@ -167,46 +210,26 @@ class ChronoFocusView extends WatchUi.WatchFace {
     // PUBLIC API (call from WatchFaceDelegate)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Cycle pomodoro state: idle → focus → break → focus → ...
-     * Bind to a hardware button in your delegate's onKey().
-     */
-    public function onPomodoroAction() as Void {
-        if (_pomState == :idle) {
-            _pomState   = :focus;
-            _segElapsed = 0.0f;
-            _segTotal   = POM_FOCUS.toFloat();
-        } else if (_pomState == :focus) {
-            _pomState   = :break;
-            _segElapsed = 0.0f;
-            _segTotal   = POM_BREAK.toFloat();
-        } else {
-            _pomState   = :focus;
-            _segElapsed = 0.0f;
-            _segTotal   = POM_FOCUS.toFloat();
+    // Upper half tap (or centre button): start focus from idle/waiting
+    public function onUpperTap() as Void {
+        if ((_pomState == :idle || _pomState == :waiting) && _pomCompleted < _pomGoal) {
+            _startFocus();
         }
         WatchUi.requestUpdate();
     }
 
-    /**
-     * Advance the active segment by deltaMin minutes.
-     * Call from a 1-minute timer in your AppBase (or onPartialUpdate).
-     */
-    public function tickMinute(deltaMin as Float) as Void {
-        if (_pomState == :idle) { return; }
-        _segElapsed += deltaMin;
-        if (_segElapsed >= _segTotal) {
-            if (_pomState == :focus) {
-                _pomCompleted++;
-                _pomState   = :break;
-                _segElapsed = 0.0f;
-                _segTotal   = ((_pomCompleted % 4 == 0) ? POM_LONG_BRK : POM_BREAK).toFloat();
-            } else {
-                _pomState   = :focus;
-                _segElapsed = 0.0f;
-                _segTotal   = POM_FOCUS.toFloat();
-            }
+    // Lower half tap: skip current focus (no credit) → break, or skip break → waiting
+    public function onLowerTap() as Void {
+        if (_pomState == :focus) {
+            _startBreak();
+        } else if (_pomState == :break) {
+            _toWaiting();
         }
+        WatchUi.requestUpdate();
+    }
+
+    // Timer callback — just triggers a redraw; onUpdate() does all the real work.
+    public function tickSecond() as Void {
         WatchUi.requestUpdate();
     }
 
@@ -272,7 +295,7 @@ class ChronoFocusView extends WatchUi.WatchFace {
             var a2 = a1 - slotSpan;
 
             var isDone    = (i < _pomCompleted);
-            var isCurrent = (i == _pomCompleted) && (_pomState != :idle);
+            var isCurrent = (i == _pomCompleted) && (_pomState == :focus || _pomState == :break);
 
             var col;
             if (isCurrent) {
@@ -342,12 +365,20 @@ class ChronoFocusView extends WatchUi.WatchFace {
         dc.drawArc(cx, cy, rMid, Graphics.ARC_CLOCKWISE,
             ARC_START.toNumber(), (ARC_START - ARC_SPAN).toNumber());
 
-        if (_pomState == :idle || _segTotal <= 0.0f) { return; }
+        if (_pomState == :idle) { return; }
 
-        var prog   = ChronoUI.UiMath.clamp01(_segElapsed / _segTotal);
+        var prog;
+        var ringColor;
+        if (_pomState == :waiting) {
+            prog      = 1.0f;
+            ringColor = COLOR_FOCUS_PST;
+        } else {
+            prog      = (_segTotal > 0.0f) ? ChronoUI.UiMath.clamp01(_segElapsed / _segTotal) : 0.0f;
+            ringColor = accentColor;
+        }
         var pAngle = ARC_START - prog * ARC_SPAN;
 
-        dc.setColor(accentColor, Graphics.COLOR_TRANSPARENT);
+        dc.setColor(ringColor, Graphics.COLOR_TRANSPARENT);
         dc.drawArc(cx, cy, rMid, Graphics.ARC_CLOCKWISE,
             ARC_START.toNumber(), pAngle.toNumber());
 
@@ -512,7 +543,7 @@ class ChronoFocusView extends WatchUi.WatchFace {
         var blockCY = (sepY1 + sepY2) / 2;
 
         // Left half: POM label + countdown
-        var pomLabel = "POM " + (_pomCompleted + 1).toString();
+        var pomLabel = "POM " + ((_pomState == :waiting) ? _pomCompleted : (_pomCompleted + 1)).toString();
         var pSize = 20;
         var pFont = Graphics.getVectorFont({
             :face => ["RobotoCondensed", "RobotoRegular", "Swiss721Regular"],
@@ -526,15 +557,19 @@ class ChronoFocusView extends WatchUi.WatchFace {
         });
         var leftCX   = cx - blockW / 4;
 
-        var remTotal = _segTotal - _segElapsed;
-        var remM     = remTotal.toNumber();
-        var remS     = ((remTotal - remM.toFloat()) * 60.0f + 0.5f).toNumber();
-        if (remM < 0) { remM = 0; }
-        if (remS < 0) { remS = 0; }
-        var remStr   = (_pomState == :idle)
-            ? "--:--"
-            : (remM < 10 ? "0" : "") + remM.toString() + ":" +
-              (remS < 10 ? "0" : "") + remS.toString();
+        var remStr;
+        if (_pomState == :idle) {
+            remStr = "--:--";
+        } else if (_pomState == :waiting) {
+            remStr = "DONE";
+        } else {
+            var remSec = _segTotal - _segElapsed;
+            if (remSec < 0.0f) { remSec = 0.0f; }
+            var remM = (remSec / 60.0f).toNumber();
+            var remS = (remSec - remM.toFloat() * 60.0f).toNumber();
+            remStr = (remM < 10 ? "0" : "") + remM.toString() + ":"
+                   + (remS < 10 ? "0" : "") + remS.toString();
+        }
 
         ChronoUI.UiText.drawCenteredAt(dc, leftCX, sepY1 + 7,  pomLabel, pFont, 0x555555);
         ChronoUI.UiText.drawCenteredAt(dc, leftCX, blockCY + 5, remStr,  pValFont, accentColor);
@@ -695,9 +730,123 @@ class ChronoFocusView extends WatchUi.WatchFace {
     // ─────────────────────────────────────────────────────────────────────────
 
     private function _accentColor() as Number {
-        if (_pomState == :focus) { return COLOR_FOCUS_ACT; }
-        if (_pomState == :break) { return COLOR_BREAK_ACT; }
+        if (_pomState == :focus)   { return COLOR_FOCUS_ACT; }
+        if (_pomState == :break)   { return COLOR_BREAK_ACT; }
+        if (_pomState == :waiting) { return COLOR_FOCUS_PST; }
         return COLOR_IDLE_ACT;
+    }
+
+    // ── State transitions ────────────────────────────────────────────────────
+
+    private function _startFocus() as Void {
+        _pomState      = :focus;
+        _segStartEpoch = Time.now().value();
+        _segElapsed    = 0.0f;
+        _segTotal      = POM_FOCUS_S.toFloat();
+        _saveState();
+        _scheduleWakeEvent(POM_FOCUS_S);
+    }
+
+    private function _startBreak() as Void {
+        var isLong     = (_pomCompleted > 0 && _pomCompleted % 4 == 0);
+        var breakSecs  = isLong ? POM_LONG_BREAK_S : POM_BREAK_S;
+        _pomState      = :break;
+        _segStartEpoch = Time.now().value();
+        _segElapsed    = 0.0f;
+        _segTotal      = breakSecs.toFloat();
+        _saveState();
+        _scheduleWakeEvent(breakSecs);
+        _notify("ChronoFocus", isLong ? "Długa przerwa — 25 min!" : "Czas na przerwę!");
+    }
+
+    private function _toWaiting() as Void {
+        _pomState   = :waiting;
+        _segElapsed = POM_FOCUS_S.toFloat();
+        _segTotal   = POM_FOCUS_S.toFloat();
+        _saveState();
+        _cancelWakeEvent();
+        _notify("ChronoFocus", "Przerwa zakończona!");
+    }
+
+    private function _notify(title as String, subtitle as String) as Void {
+        if (Notifications has :showNotification) {
+            Notifications.showNotification(title, subtitle, {:actions => [], :dismissPrevious => true});
+        }
+    }
+
+
+    // ── Persistence ──────────────────────────────────────────────────────────
+
+    private function _saveState() as Void {
+        var stateInt = 0;
+        if (_pomState == :focus)   { stateInt = 1; }
+        if (_pomState == :break)   { stateInt = 2; }
+        if (_pomState == :waiting) { stateInt = 3; }
+        Application.Storage.setValue("pom_state",       stateInt);
+        Application.Storage.setValue("pom_completed",   _pomCompleted);
+        Application.Storage.setValue("pom_start_epoch", _segStartEpoch);
+        Application.Storage.setValue("pom_total",       _segTotal.toNumber());
+        Application.Storage.setValue("pom_day",         _todayDayNumber());
+    }
+
+    private function _loadState() as Void {
+        var today     = _todayDayNumber();
+        var storedDay = Application.Storage.getValue("pom_day") as Number?;
+        if (storedDay == null || storedDay != today) {
+            _resetDay(today);
+            return;
+        }
+        var c = Application.Storage.getValue("pom_completed") as Number?;
+        _pomCompleted = (c != null) ? c : 0;
+        var s = Application.Storage.getValue("pom_state") as Number?;
+        var ep = Application.Storage.getValue("pom_start_epoch") as Number?;
+        var stateInt = (s != null) ? s : 0;
+        _segStartEpoch = (ep != null) ? ep : 0;
+        if (stateInt == 1) {
+            _pomState   = :focus;
+            _segTotal   = POM_FOCUS_S.toFloat();
+            _segElapsed = (Time.now().value() - _segStartEpoch).toFloat();
+            if (_segElapsed >= _segTotal) { _pomCompleted++; _toWaiting(); }
+        } else if (stateInt == 2) {
+            var t = Application.Storage.getValue("pom_total") as Number?;
+            _pomState   = :break;
+            _segTotal   = (t != null && t > 0) ? t.toFloat() : POM_BREAK_S.toFloat();
+            _segElapsed = (Time.now().value() - _segStartEpoch).toFloat();
+            if (_segElapsed >= _segTotal) { _toWaiting(); }
+        } else if (stateInt == 3) {
+            _toWaiting();
+        } else {
+            _pomState   = :idle;
+            _segElapsed = 0.0f;
+            _segTotal   = POM_FOCUS_S.toFloat();
+        }
+    }
+
+    private function _resetDay(today as Number) as Void {
+        _pomState      = :idle;
+        _pomCompleted  = 0;
+        _segElapsed    = 0.0f;
+        _segTotal      = POM_FOCUS_S.toFloat();
+        _segStartEpoch = 0;
+        Application.Storage.setValue("pom_day",         today);
+        Application.Storage.setValue("pom_completed",   0);
+        Application.Storage.setValue("pom_state",       0);
+        Application.Storage.setValue("pom_start_epoch", 0);
+        Application.Storage.setValue("pom_total",       0);
+    }
+
+    private function _checkDayReset() as Void {
+        var today     = _todayDayNumber();
+        var storedDay = Application.Storage.getValue("pom_day") as Number?;
+        if (storedDay == null || storedDay != today) {
+            _resetDay(today);
+            WatchUi.requestUpdate();
+        }
+    }
+
+    private function _todayDayNumber() as Number {
+        var info = Gregorian.info(Time.now(), Time.FORMAT_SHORT);
+        return info.year * 10000 + info.month * 100 + info.day;
     }
 
 }
